@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+    xmlns:cxf="http://camel.apache.org/schema/cxf"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="        http://www.springframework.org/schema/beans https://www.springframework.org/schema/beans/spring-beans.xsd        http://camel.apache.org/schema/spring       https://camel.apache.org/schema/spring/camel-spring.xsd http://camel.apache.org/schema/cxf    http://camel.apache.org/schema/cxf/camel-cxf.xsd">
+    <cxf:cxfEndpoint
+        address="http://soapservice:8080/webservices/CreateCustomer"
+        id="CreateCustomerEndpoint"
+        serviceClass="org.example.createcustomer_wsdl.CreateCustomerEndpoint" wsdlURL="WSDL/GetFullName.wsdl"/>
+    <!-- Bean Declaration -->
+    <bean class="org.mycompany.CreateCustomerRequestProcessor" id="RequestProcessor"/>
+    <bean class="org.mycompany.CreateCustomerResponseProcessor" id="ResponseProcessor"/>
+    <bean class="org.mycompany.ErrorAcknowledger" id="ErrorAckProcessor"/>
+    <camelContext id="RestCreateCustomer" xmlns="http://camel.apache.org/schema/spring">
+        <dataFormats>
+            <json id="json" library="Jackson"/>
+        </dataFormats>
+        <route id="CreateCustRoute">
+            <from id="receiveReq" uri="restlet:http://0.0.0.0:8080/rest/api/v1.0/createCustomer?restletMethod=POST"/>
+            <setProperty id="setConversationId" propertyName="conversationId">
+                <simple>${header.ConversationID}</simple>
+            </setProperty>
+            <setProperty id="setSourceName" propertyName="sourceName">
+                <simple>${header.SourceName}</simple>
+            </setProperty>
+            <setProperty id="setTxnId" propertyName="transactionId">
+                <simple>${exchangeId}</simple>
+            </setProperty>
+            <setHeader headerName="messageType" id="SourceRequest">
+                <simple>SourceRequest</simple>
+            </setHeader>
+            <wireTap id="logSrcRequest" uri="seda:fetchLogs"/>
+            <to id="validateheader" uri="direct:processHeader"/>
+            <choice id="headerProcessing">
+                <when id="Missingheader">
+                    <simple>${header.MissingHeader} == 'MissingHeader'</simple>
+                    <setHeader headerName="messageType" id="MissingHeader">
+                        <simple>SourceResponse</simple>
+                    </setHeader>
+                    <setHeader headerName="CamelHttpResponseCode" id="CamelHttpResponseCode">
+                        <simple>400</simple>
+                    </setHeader>
+                    <setHeader headerName="responseStatus" id="failure">
+                        <simple>Failure</simple>
+                    </setHeader>
+                    <wireTap id="logMissingHeaderResp" uri="seda:fetchLogs"/>
+                </when>
+                <otherwise id="SuccessPath">
+                    <convertBodyTo id="_convertBodyTo2" type="java.lang.String"/>
+                    <unmarshal id="Unmarshal_Request">
+                        <json library="Jackson" unmarshalTypeName="org.mycompany.Customer"/>
+                    </unmarshal>
+                    <setHeader headerName="operationName" id="setOperationName">
+                        <constant>CreateCustomer</constant>
+                    </setHeader>
+                    <setHeader headerName="operationNameSpace" id="SetOperationNameSpace">
+                        <constant>http://www.example.org/CreateCustomer_WSDL/</constant>
+                    </setHeader>
+                    <process id="ProcessRequest" ref="RequestProcessor"/>
+                    <to id="WebserviceCall" pattern="InOut" uri="cxf:bean:CreateCustomerEndpoint"/>
+                    <process id="ProcessResponse" ref="ResponseProcessor"/>
+                    <marshal id="MarshalResponse">
+                        <json library="Jackson" prettyPrint="true"/>
+                    </marshal>
+                    <convertBodyTo id="_convertBodyTo1" type="java.lang.String"/>
+                    <setHeader headerName="messageType" id="SuccessResponse">
+                        <simple>SourceResponse</simple>
+                    </setHeader>
+                    <setHeader headerName="responseStatus" id="successResp">
+                        <simple>Success</simple>
+                    </setHeader>
+                    <wireTap id="logSourceResp" uri="seda:fetchLogs"/>
+                </otherwise>
+            </choice>
+        </route>
+        <!-- Header Validation Route -->
+        <route autoStartup="true" id="ValidateHeaders">
+            <from id="processHeader" uri="direct:processHeader"/>
+            <choice id="_choiceMissingHeaders">
+                <when id="_whenMissingHeaders">
+                    <simple>${in.header.SourceName} == null || ${in.header.SourceName} == "" || 
+                    ${in.header.ConversationID} == null || ${in.header.ConversationID} == ""</simple>
+                    <setHeader headerName="MissingHeader" id="setHeaderMissingHeaders">
+                        <simple>MissingHeader</simple>
+                    </setHeader>
+                    <process id="ErrorAck" ref="ErrorAckProcessor"/>
+                    <marshal id="MarshalErrorResponse">
+                        <json library="Jackson" prettyPrint="true"/>
+                    </marshal>
+                    <convertBodyTo id="convertToString" type="java.lang.String"/>
+                </when>
+            </choice>
+        </route>
+        <!-- Logger Route -->
+        <route autoStartup="true" id="loggerRoute">
+            <from id="FetchQLBLogs" uri="seda:fetchLogs"/>
+            <setBody id="setLogBody">
+                <simple>
+					{"timestamp":"${date:now:dd-yyyy-MM HH-mm-ss}","messageType":"${header.messageType}","sourceName":"${exchangeProperty.sourceName}","conversationId":"${exchangeProperty.conversationId}","transactionId":"${exchangeProperty.transactionId}","status":"${header.responseStatus}","payload":${body}}
+				</simple>
+            </setBody>
+            <!--  <convertBodyTo type="java.lang.String" /> -->
+            <transform id="_transform1">
+                <simple>${bodyAs(String)}</simple>
+            </transform>
+            <transform id="_transform2">
+                <simple>${body.replaceAll("[\\n\\t]","")}</simple>
+            </transform>
+            <log id="logBody" message="${body}"/>
+        </route>
+    </camelContext>
+</beans>
